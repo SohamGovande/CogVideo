@@ -1,4 +1,7 @@
 """
+
+torchrun --nproc_per_node=2 inference/cli_demo.py --prompt "A girl riding a bike." --model_path THUDM/CogVideoX-2b
+
 This script demonstrates how to generate a video using the CogVideoX model with the Hugging Face `diffusers` pipeline.
 The script supports different types of video generation, including text-to-video (t2v), image-to-video (i2v),
 and video-to-video (v2v), depending on the input data and different weight.
@@ -19,8 +22,9 @@ Additional options are available to specify the model path, guidance scale, numb
 
 import argparse
 from typing import Literal
-
+from apply_tp import apply_tp
 import torch
+import os
 from diffusers import (
     CogVideoXPipeline,
     CogVideoXDDIMScheduler,
@@ -30,7 +34,7 @@ from diffusers import (
 )
 
 from diffusers.utils import export_to_video, load_image, load_video
-
+import torch.distributed as dist
 
 def generate_video(
     prompt: str,
@@ -96,13 +100,14 @@ def generate_video(
     # turn off if you have multiple GPUs or enough GPU memory(such as H100) and it will cost less time in inference
     # and enable to("cuda")
 
-    # pipe.to("cuda")
+    pipe.to("cuda")
 
-    pipe.enable_sequential_cpu_offload()
+    # pipe.enable_sequential_cpu_offload()
 
     pipe.vae.enable_slicing()
     pipe.vae.enable_tiling()
-
+    if dist.is_available() and dist.is_initialized():
+        apply_tp(pipe.transformer)
     # 4. Generate the video frames based on the prompt.
     # `num_frames` is the Number of frames to generate.
     # This is the default value for 6 seconds video and 8 fps and will plus 1 frame for the first frame and 49 frames.
@@ -143,6 +148,9 @@ def generate_video(
 
 
 if __name__ == "__main__":
+    if os.environ.get('WORLD_SIZE', None) is not None and not dist.is_initialized():
+        dist.init_process_group(backend='nccl')
+        torch.cuda.set_device(dist.get_rank())
     parser = argparse.ArgumentParser(description="Generate a video from a text prompt using CogVideoX")
     parser.add_argument("--prompt", type=str, required=True, help="The description of the video to be generated")
     parser.add_argument(
@@ -152,7 +160,7 @@ if __name__ == "__main__":
         help="The path of the image to be used as the background of the video",
     )
     parser.add_argument(
-        "--model_path", type=str, default="THUDM/CogVideoX-5b", help="The path of the pre-trained model to be used"
+        "--model_path", type=str, default="THUDM/CogVideoX-2b", help="The path of the pre-trained model to be used"
     )
     parser.add_argument("--lora_path", type=str, default=None, help="The path of the LoRA weights to be used")
     parser.add_argument("--lora_rank", type=int, default=128, help="The rank of the LoRA weights")
